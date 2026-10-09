@@ -8,10 +8,11 @@ import time
 import uuid
 from collections import defaultdict, deque
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
@@ -33,7 +34,9 @@ app.state.plan_lock = asyncio.Lock()
 _rate_buckets: dict[str, deque[float]] = defaultdict(deque)
 MAX_REQUESTS_PER_MINUTE = 120
 PLAN_TTL_SECONDS = 10 * 60
-INDEX_FILE = Path(__file__).parent / "static" / "index.html"
+STATIC_DIR = Path(__file__).parent / "static"
+INDEX_FILE = STATIC_DIR / "index.html"
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
 class ChatRequest(BaseModel):
@@ -91,59 +94,74 @@ def _result_message(result: dict[str, Any]) -> str:
 
 @app.middleware("http")
 async def secure_local_api(request, call_next):
-    """Apply basic hardening and per-process request limits; not remote auth."""
-    if request.url.path == "/api/upload" and request.method == "POST":
+    """Apply common response headers, basic local request limits, and origin checks."""
+    response = None
+    path = request.url.path
+
+    if path == "/api/upload" and request.method == "POST":
         raw_length = request.headers.get("content-length")
         if raw_length:
             try:
                 request_length = int(raw_length)
             except ValueError:
-                return JSONResponse(status_code=400, content={"detail": "Invalid request length."})
-            # Multipart framing adds a small overhead around the actual 10 MiB file limit.
-            if request_length > actions.MAX_UPLOAD_BYTES + 1024 * 1024:
-                return JSONResponse(
-                    status_code=413,
-                    content={"detail": "Uploads are limited to 10 MiB."},
+                response = JSONResponse(
+                    status_code=400,
+                    content={"detail": "Invalid request length."},
                 )
-    if request.url.path.startswith("/api/"):
+            else:
+                # Multipart framing adds overhead beyond the 10 MiB file limit.
+                if request_length > actions.MAX_UPLOAD_BYTES + 1024 * 1024:
+                    response = JSONResponse(
+                        status_code=413,
+                        content={"detail": "Uploads are limited to 10 MiB."},
+                    )
+
+    if response is None and path.startswith("/api/"):
         origin = request.headers.get("origin")
         if origin and request.method in {"POST", "PUT", "PATCH", "DELETE"}:
             expected_origin = f"{request.url.scheme}://{request.url.netloc}"
             if origin.rstrip("/") != expected_origin.rstrip("/"):
-                return JSONResponse(
+                response = JSONResponse(
                     status_code=403,
                     content={"detail": "Cross-origin state changes are not allowed."},
                 )
-        now = time.monotonic()
-        client_host = request.client.host if request.client else "local"
-        bucket = _rate_buckets[client_host]
-        while bucket and bucket[0] < now - 60:
-            bucket.popleft()
-        if len(bucket) >= MAX_REQUESTS_PER_MINUTE:
-            return JSONResponse(
-                status_code=429,
-                content={"detail": "Local request limit reached. Try again shortly."},
-            )
-        bucket.append(now)
-        if len(_rate_buckets) > 500:
-            for key in list(_rate_buckets):
-                entries = _rate_buckets[key]
-                while entries and entries[0] < now - 60:
-                    entries.popleft()
-                if not entries:
-                    _rate_buckets.pop(key, None)
 
-    response = await call_next(request)
+        if response is None:
+            now = time.monotonic()
+            client_host = request.client.host if request.client else "local"
+            bucket = _rate_buckets[client_host]
+            while bucket and bucket[0] < now - 60:
+                bucket.popleft()
+            if len(bucket) >= MAX_REQUESTS_PER_MINUTE:
+                response = JSONResponse(
+                    status_code=429,
+                    content={"detail": "Local request limit reached. Try again shortly."},
+                )
+            else:
+                bucket.append(now)
+
+            if len(_rate_buckets) > 500:
+                for key in list(_rate_buckets):
+                    entries = _rate_buckets[key]
+                    while entries and entries[0] < now - 60:
+                        entries.popleft()
+                    if not entries:
+                        _rate_buckets.pop(key, None)
+
+    if response is None:
+        response = await call_next(request)
+
+    # Apply headers to ordinary responses and early security rejections alike.
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "same-origin"
     response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
     response.headers["Content-Security-Policy"] = (
-        "default-src 'self'; script-src 'self' 'unsafe-inline'; "
-        "style-src 'self' 'unsafe-inline'; connect-src 'self'; "
-        "img-src 'self' data:; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
+        "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+        "connect-src 'self'; img-src 'self' data:; base-uri 'none'; "
+        "frame-ancestors 'none'; form-action 'self'"
     )
-    if request.url.path.startswith("/api/"):
+    if path.startswith("/api/"):
         response.headers["Cache-Control"] = "no-store"
     return response
 
@@ -174,7 +192,7 @@ async def workspace_files() -> dict[str, Any]:
 
 
 @app.post("/api/upload")
-async def upload_file(file: UploadFile = File(...)) -> dict[str, Any]:
+async def upload_file(file: Annotated[UploadFile, File()]) -> dict[str, Any]:
     root = get_workspace()
     try:
         filename = safe_filename(file.filename or "")
