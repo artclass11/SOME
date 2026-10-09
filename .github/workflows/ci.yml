@@ -39,7 +39,7 @@ jobs:
       - name: Validate frontend JavaScript
         run: node --check src/some/static/app.js
       - name: Build wheel
-        run: python -m pip wheel --no-deps --no-build-isolation --wheel-dir dist .
+        run: python -m pip wheel --no-deps --wheel-dir dist .
       - name: Verify packaged web assets
         run: |
           python - <<'PY'
