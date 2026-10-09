@@ -38,3 +38,19 @@ jobs:
         run: pytest -q
       - name: Validate frontend JavaScript
         run: node --check src/some/static/app.js
+      - name: Build wheel
+        run: python -m pip wheel --no-deps --no-build-isolation --wheel-dir dist .
+      - name: Verify packaged web assets
+        run: |
+          python - <<'PY'
+          import glob
+          import zipfile
+
+          wheels = glob.glob("dist/*.whl")
+          assert len(wheels) == 1, f"Expected one wheel, found {wheels}"
+          with zipfile.ZipFile(wheels[0]) as archive:
+              names = set(archive.namelist())
+          required = {"some/static/index.html", "some/static/app.js"}
+          missing = required - names
+          assert not missing, f"Wheel is missing web assets: {sorted(missing)}"
+          PY
