@@ -5,6 +5,9 @@ const form = document.getElementById("composer");
     const hint = document.getElementById("hint");
     const intro = document.getElementById("intro");
     const uploadInput = document.getElementById("upload");
+    const activityToggle = document.getElementById("activity-toggle");
+    const activityPanel = document.getElementById("activity-panel");
+    const activityList = document.getElementById("activity-list");
 
     function el(tag, className, text) {
       const node = document.createElement(tag);
@@ -20,8 +23,14 @@ const form = document.getElementById("composer");
       wrap.append(el("div", "bubble" + (data && data.kind === "error" ? " error" : ""), text));
       if (data && data.result) wrap.append(renderResult(data.result));
       if (data && data.kind === "plan" && planId) wrap.append(renderPlanActions(planId));
+      if (data && data.receipt_id) {
+        wrap.append(el("div", "who", "Receipt · " + data.receipt_id.slice(0, 12)));
+      }
       messages.append(wrap);
       wrap.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      if (data && data.receipt_id && !activityPanel.classList.contains("hidden")) {
+        loadActivity().catch(() => {});
+      }
       return wrap;
     }
 
@@ -138,6 +147,64 @@ const form = document.getElementById("composer");
       if (!response.ok) throw new Error(result.detail || "The action failed.");
       return result;
     }
+
+    async function loadActivity() {
+      activityList.replaceChildren(el("li", "subtle", "Loading receipts…"));
+      try {
+        const response = await api("/api/receipts?limit=30");
+        activityList.replaceChildren();
+        if (!response.items.length) {
+          activityList.append(el("li", "subtle", "No actions recorded yet."));
+          return;
+        }
+        response.items.forEach(receipt => {
+          const item = el("li", "receipt-item");
+          const details = el("div", "receipt-details");
+          details.append(el("span", "", receipt.action.replaceAll("_", " ")));
+          const state = el("span", "receipt-state " + (
+            receipt.status === "failed" || receipt.status === "interrupted" ? "error" : "subtle"
+          ), receipt.status);
+          details.append(state);
+          item.append(details);
+          item.append(el("span", "subtle", receipt.summary));
+          const timestamp = new Date(receipt.created_at);
+          item.append(el("span", "subtle", Number.isNaN(timestamp.getTime())
+            ? receipt.created_at : timestamp.toLocaleString()));
+          if (receipt.status === "interrupted") {
+            if (receipt.recovery_acknowledged_at) {
+              item.append(el("span", "subtle", "Workspace review acknowledged. Verify before retrying."));
+            } else {
+              const acknowledge = el("button", "secondary receipt-recovery", "I inspected the workspace");
+              acknowledge.type = "button";
+              acknowledge.addEventListener("click", async () => {
+                acknowledge.disabled = true;
+                try {
+                  await api("/api/receipts/" + encodeURIComponent(receipt.id) + "/acknowledge-recovery", {
+                    method: "POST"
+                  });
+                  await loadActivity();
+                } catch (error) {
+                  acknowledge.disabled = false;
+                  appendMessage("assistant", error.message, { kind: "error" });
+                }
+              });
+              item.append(acknowledge);
+              item.append(el("span", "subtle", "Inspect affected files before retrying. SOME does not auto-replay interrupted work."));
+            }
+          }
+          activityList.append(item);
+        });
+      } catch (error) {
+        activityList.replaceChildren(el("li", "error", error.message || "Could not load activity."));
+      }
+    }
+
+    activityToggle.addEventListener("click", async () => {
+      const opening = activityPanel.classList.contains("hidden");
+      activityPanel.classList.toggle("hidden");
+      activityToggle.setAttribute("aria-expanded", String(opening));
+      if (opening) await loadActivity();
+    });
 
     async function sendChat(message) {
       const text = message.trim();

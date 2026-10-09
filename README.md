@@ -14,6 +14,7 @@ SOME is not a chatbot that stops at paragraphs. Its agent maps a short message t
 - **Preview file organization** by file type. Moving files requires a separate confirmation.
 - **Create notes** from text you provide.
 - **Review operation results** through a bounded action layer and same-origin local web interface.
+- **Inspect durable action receipts** with timestamps, verified counts, success/failure states, and a recovery warning after interrupted work.
 - **Use an optional local Ollama model** to classify requests into an allowlisted action schema. The model cannot run shell commands or invent tools; deterministic routing works without a model.
 
 The interface is a small, responsive, dark chat UI. The runtime executes actions instead of presenting generated prose as completed work.
@@ -30,7 +31,7 @@ python -m pip install -e ".[dev]"
 python -m uvicorn some.main:app --host 127.0.0.1 --port 8080
 ```
 
-Open http://127.0.0.1:8080. By default, files live in `~/.some/workspace`. Set `SOME_WORKSPACE` to use another dedicated directory. SOME binds to loopback intentionally; do not change this to `0.0.0.0` without adding real authentication, authorization, TLS, per-user isolation, and deployment hardening.
+Open http://127.0.0.1:8080. By default, files live in `~/.some/workspace` and action receipts are stored in `~/.some/receipts.sqlite3`. Set `SOME_WORKSPACE` to use another dedicated directory, or `SOME_RECEIPTS_DB` to choose a dedicated receipt database path. SOME binds to loopback intentionally; do not change this to `0.0.0.0` without adding real authentication, authorization, TLS, per-user isolation, and deployment hardening.
 
 ### Try these messages
 
@@ -65,10 +66,11 @@ When configured, SOME asks the local model for a JSON action classification. It 
 4. **Private by default.** Local storage, loopback binding, no analytics, no telemetry, no cloud dependency.
 5. **Small surface area.** Typed actions, strict path boundaries, upload limits, and visible artifacts.
 6. **Honest status.** A local MVP is not marketed as audited, multi-tenant, or production-ready.
+7. **Recover, don't blindly replay.** SQLite action receipts are saved locally. After a process restart, unfinished actions are marked interrupted and must be inspected before retrying.
 
 ## Project status and roadmap
 
-See [ARCHITECTURE.md](docs/ARCHITECTURE.md), [SECURITY.md](docs/SECURITY.md), and [CONTRIBUTING.md](CONTRIBUTING.md). CI now checks Python 3.11–3.13, runs regression tests, compiles Python, and validates front-end JavaScript. CodeQL and Dependabot workflows add scheduled static analysis and dependency update proposals. Remaining priorities: durable action receipts, background jobs for large files, authenticated multi-user isolation before hosted deployment, then carefully scoped integrations (calendar, email, messaging) with explicit permissions.
+See [ARCHITECTURE.md](docs/ARCHITECTURE.md), [SECURITY.md](docs/SECURITY.md), and [CONTRIBUTING.md](CONTRIBUTING.md). CI now checks Python 3.11–3.13, runs regression tests, compiles Python, and validates front-end JavaScript. CodeQL and Dependabot workflows add scheduled static analysis and dependency update proposals. Remaining priorities: background jobs for large files, recovery drills for real crash/failure windows, authenticated multi-user isolation before hosted deployment, then carefully scoped integrations (calendar, email, messaging) with explicit permissions.
 
 ## License
 
