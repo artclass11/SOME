@@ -284,6 +284,23 @@ async def chat(body: ChatRequest) -> dict[str, Any]:
         }
 
 
+@app.get("/api/artifacts/{artifact_path:path}", include_in_schema=False)
+async def download_artifact(artifact_path: str) -> FileResponse:
+    """Download a generated or uploaded workspace file without exposing arbitrary paths."""
+    try:
+        target = safe_path(artifact_path, get_workspace(), must_exist=True)
+    except (ValueError, FileNotFoundError, OSError) as exc:
+        raise HTTPException(status_code=404, detail="That workspace artifact was not found.") from exc
+    if not target.is_file():
+        raise HTTPException(status_code=404, detail="That workspace artifact was not found.")
+    return FileResponse(
+        target,
+        filename=target.name,
+        media_type="application/octet-stream",
+        headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
+    )
+
+
 @app.post("/api/plans/{plan_id}/confirm")
 async def confirm_plan(plan_id: str) -> dict[str, Any]:
     async with app.state.plan_lock:
