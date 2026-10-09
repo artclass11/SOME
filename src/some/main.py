@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 import uuid
 from collections import defaultdict, deque
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
@@ -92,6 +94,14 @@ def _result_message(result: dict[str, Any]) -> str:
 async def secure_local_api(request, call_next):
     """Apply basic hardening and per-process request limits; not remote auth."""
     if request.url.path.startswith("/api/"):
+        origin = request.headers.get("origin")
+        if origin and request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+            expected_origin = f"{request.url.scheme}://{request.url.netloc}"
+            if origin.rstrip("/") != expected_origin.rstrip("/"):
+                return JSONResponse(
+                    status_code=403,
+                    content={"detail": "Cross-origin state changes are not allowed."},
+                )
         now = time.monotonic()
         client_host = request.client.host if request.client else "local"
         bucket = _rate_buckets[client_host]
@@ -138,7 +148,7 @@ async def health() -> dict[str, str]:
     return {
         "status": "ok",
         "runtime": "local-only",
-        "planner": "ollama-optional" if __import__("os").environ.get("SOME_OLLAMA_MODEL") else "rules",
+        "planner": "ollama-optional" if os.environ.get("SOME_OLLAMA_MODEL") else "rules",
     }
 
 
