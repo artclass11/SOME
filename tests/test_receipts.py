@@ -1,7 +1,9 @@
 from pathlib import Path
 
 import pytest
+from fastapi.testclient import TestClient
 
+from some.main import app
 from some.receipts import (
     acknowledge_recovery,
     finish_receipt,
@@ -72,3 +74,20 @@ def test_receipt_limits_are_validated(tmp_path: Path, monkeypatch):
         list_receipts(limit=101)
     with pytest.raises(ValueError, match="out of range"):
         list_receipts(offset=-1)
+
+
+def test_app_startup_marks_previously_running_receipts_interrupted(
+    tmp_path: Path, monkeypatch
+):
+    database = tmp_path / "receipts.sqlite3"
+    monkeypatch.setenv("SOME_WORKSPACE", str(tmp_path / "workspace"))
+    monkeypatch.setenv("SOME_RECEIPTS_DB", str(database))
+    (tmp_path / "workspace").mkdir()
+
+    receipt_id = start_receipt("clean_csv")
+    with TestClient(app) as client:
+        response = client.get(f"/api/receipts/{receipt_id}")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "interrupted"
+    assert "inspect the workspace" in response.json()["summary"]
