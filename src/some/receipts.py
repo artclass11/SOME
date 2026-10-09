@@ -7,6 +7,7 @@ CSV cell values, or file paths.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import sqlite3
@@ -14,7 +15,7 @@ import threading
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from .security import get_workspace
 
@@ -80,6 +81,16 @@ def _connect() -> sqlite3.Connection:
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA busy_timeout=5000")
     return connection
+
+
+@contextlib.contextmanager
+def _connection() -> Iterator[sqlite3.Connection]:
+    connection = _connect()
+    try:
+        with connection:
+            yield connection
+    finally:
+        connection.close()
 
 
 def _as_public_dict(row: sqlite3.Row) -> dict[str, Any]:
@@ -178,7 +189,7 @@ def receipt_summary(action: str, result: dict[str, Any]) -> str:
 def start_receipt(action: str, summary: str | None = None) -> str:
     """Persist a running receipt before the operation begins."""
     receipt_id = uuid.uuid4().hex
-    with _connect() as connection:
+    with _connection() as connection:
         connection.execute(
             """
             INSERT INTO action_receipts
@@ -200,7 +211,7 @@ def finish_receipt(
     if status not in _FINAL_STATES:
         raise ValueError(f"Unsupported final receipt status: {status}")
     encoded_facts = json.dumps(facts or {}, sort_keys=True, separators=(",", ":"))
-    with _connect() as connection:
+    with _connection() as connection:
         cursor = connection.execute(
             """
             UPDATE action_receipts
@@ -218,7 +229,7 @@ def finish_receipt(
 
 
 def get_receipt(receipt_id: str) -> dict[str, Any] | None:
-    with _connect() as connection:
+    with _connection() as connection:
         row = connection.execute(
             "SELECT * FROM action_receipts WHERE id = ?", (receipt_id,)
         ).fetchone()
@@ -230,7 +241,7 @@ def list_receipts(limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
         raise ValueError("Receipt limit must be between 1 and 100.")
     if not 0 <= offset <= 100_000:
         raise ValueError("Receipt offset is out of range.")
-    with _connect() as connection:
+    with _connection() as connection:
         rows = connection.execute(
             """
             SELECT * FROM action_receipts
@@ -249,7 +260,7 @@ def recover_interrupted_receipts() -> int:
     operation automatically. The user must inspect the workspace before retrying.
     """
     now = _now()
-    with _connect() as connection:
+    with _connection() as connection:
         cursor = connection.execute(
             """
             UPDATE action_receipts
@@ -265,7 +276,7 @@ def recover_interrupted_receipts() -> int:
 
 def acknowledge_recovery(receipt_id: str) -> dict[str, Any] | None:
     """Record that a user reviewed an interrupted operation's recovery warning."""
-    with _connect() as connection:
+    with _connection() as connection:
         cursor = connection.execute(
             """
             UPDATE action_receipts
