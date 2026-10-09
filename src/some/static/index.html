@@ -60,6 +60,8 @@
     footer a { color:#b3bb9a; text-decoration:none; }
     footer a:hover { text-decoration:underline; }
     .error { color:var(--danger); }
+    .download-link { display:inline-flex; margin-top:10px; padding:8px 10px; border:1px solid #59613a; border-radius:9px; color:var(--accent); text-decoration:none; font-weight:650; font-size:11px; }
+    .download-link:hover { background:#191e12; }
     @media (max-width:600px) {
       .shell { padding:0 13px; }
       header { height:64px; }
@@ -196,6 +198,16 @@
           fields.forEach(([key, value]) => list.append(el("li", "", key + ": " + value)));
           box.append(list);
         }
+      }
+      const artifactPath = data.action === "clean_csv" ? data.output
+        : (data.action === "create_note" || data.action === "upload_file") ? data.file
+        : null;
+      if (typeof artifactPath === "string" && artifactPath.length > 0) {
+        const encodedPath = artifactPath.split("/").map(part => encodeURIComponent(part)).join("/");
+        const link = el("a", "download-link", "Download file ↗");
+        link.href = "/api/artifacts/" + encodedPath;
+        link.setAttribute("download", "");
+        box.append(link);
       }
       return box;
     }
