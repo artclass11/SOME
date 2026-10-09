@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import os
+import contextlib
 import time
 import uuid
 from collections import defaultdict, deque
 from pathlib import Path
 from typing import Annotated, Any
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -18,9 +19,28 @@ from starlette.concurrency import run_in_threadpool
 
 from . import actions
 from .planner import HELP_MESSAGE, route_message
+from .receipts import (
+    acknowledge_recovery,
+    finish_receipt,
+    get_receipt,
+    list_receipts,
+    receipt_facts,
+    receipt_summary,
+    recover_interrupted_receipts,
+    start_receipt,
+)
 from .security import get_workspace, safe_filename, safe_path
 
+@contextlib.asynccontextmanager
+async def lifespan(_: FastAPI):
+    # SOME currently runs one local worker. Interrupted operations are never
+    # replayed automatically because their side effects may already have occurred.
+    await run_in_threadpool(recover_interrupted_receipts)
+    yield
+
+
 app = FastAPI(
+    lifespan=lifespan,
     title="SOME",
     description="Local-first work through an action-oriented chat interface.",
     version="0.1.0",
@@ -237,10 +257,13 @@ async def chat(body: ChatRequest) -> dict[str, Any]:
     if not message:
         raise HTTPException(status_code=422, detail="Enter a message.")
     root = get_workspace()
+    receipt_id: str | None = None
+    action_name: str | None = None
     try:
         csv_files = await run_in_threadpool(_files_for_planner, root)
         intent = await run_in_threadpool(route_message, message, csv_files)
         name = intent["action"]
+        action_name = name
         args = intent.get("args", {})
 
         if name in ("unknown", "help"):
@@ -260,6 +283,9 @@ async def chat(body: ChatRequest) -> dict[str, Any]:
                 prompt = "I couldn't find that CSV inside the workspace. Upload it or check the filename."
             return {"kind": "help", "message": prompt}
 
+        # Persist the running record before invoking any workspace operation.
+        receipt_id = await run_in_threadpool(start_receipt, name)
+
         if name == "list_files":
             result = await run_in_threadpool(actions.list_files, root)
         elif name == "find_duplicates":
@@ -272,7 +298,15 @@ async def chat(body: ChatRequest) -> dict[str, Any]:
                 app.state.pending_plans[plan_id] = {
                     "created_at": time.time(),
                     "moves": result["moves"],
+                    "receipt_id": receipt_id,
                 }
+            await run_in_threadpool(
+                finish_receipt,
+                receipt_id,
+                "succeeded",
+                receipt_summary(name, result),
+                receipt_facts(name, result),
+            )
             return {
                 "kind": "plan",
                 "message": (
@@ -280,6 +314,7 @@ async def chat(body: ChatRequest) -> dict[str, Any]:
                     "Nothing has changed yet."
                 ),
                 "plan_id": plan_id,
+                "receipt_id": receipt_id,
                 "result": result,
             }
         elif name == "profile_csv":
@@ -289,17 +324,80 @@ async def chat(body: ChatRequest) -> dict[str, Any]:
         elif name == "create_note":
             result = await run_in_threadpool(actions.create_note, args["content"], root)
         else:
-            # Defense in depth: unknown model output never becomes a tool invocation.
+            await run_in_threadpool(
+                finish_receipt, receipt_id, "failed", "Rejected unknown action."
+            )
             return {"kind": "help", "message": HELP_MESSAGE}
 
-        return {"kind": "result", "message": _result_message(result), "result": result}
+        await run_in_threadpool(
+            finish_receipt,
+            receipt_id,
+            "succeeded",
+            receipt_summary(name, result),
+            receipt_facts(name, result),
+        )
+        return {
+            "kind": "result",
+            "message": _result_message(result),
+            "result": result,
+            "receipt_id": receipt_id,
+        }
     except (ValueError, FileNotFoundError) as exc:
-        return {"kind": "error", "message": str(exc)}
+        if receipt_id:
+            await run_in_threadpool(
+                finish_receipt,
+                receipt_id,
+                "failed",
+                f"{action_name or 'Action'} failed; inspect the workspace before retrying.",
+            )
+        return {"kind": "error", "message": str(exc), "receipt_id": receipt_id}
     except OSError:
+        if receipt_id:
+            await run_in_threadpool(
+                finish_receipt,
+                receipt_id,
+                "failed",
+                f"{action_name or 'Action'} failed; inspect the workspace before retrying.",
+            )
         return {
             "kind": "error",
             "message": "The local operation failed. Check workspace permissions and available disk space.",
+            "receipt_id": receipt_id,
         }
+
+
+@app.get("/api/receipts")
+async def action_receipts(
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0, le=100_000),
+) -> dict[str, Any]:
+    """List durable receipts without exposing file paths or content."""
+    items = await run_in_threadpool(list_receipts, limit, offset)
+    return {"items": items, "count": len(items), "limit": limit, "offset": offset}
+
+
+@app.get("/api/receipts/{receipt_id}")
+async def action_receipt(receipt_id: str) -> dict[str, Any]:
+    item = await run_in_threadpool(get_receipt, receipt_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Receipt not found.")
+    return item
+
+
+@app.post("/api/receipts/{receipt_id}/acknowledge-recovery")
+async def acknowledge_interrupted_action(receipt_id: str) -> dict[str, Any]:
+    item = await run_in_threadpool(get_receipt, receipt_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Receipt not found.")
+    if item["status"] != "interrupted":
+        raise HTTPException(
+            status_code=409,
+            detail="Only interrupted operations need recovery acknowledgement.",
+        )
+    acknowledged = await run_in_threadpool(acknowledge_recovery, receipt_id)
+    if acknowledged is None:
+        raise HTTPException(status_code=409, detail="Receipt state changed; refresh and try again.")
+    return acknowledged
 
 
 @app.get("/api/artifacts/{artifact_path:path}", include_in_schema=False)
@@ -326,15 +424,69 @@ async def confirm_plan(plan_id: str) -> dict[str, Any]:
         plan = app.state.pending_plans.get(plan_id)
         if plan is None:
             raise HTTPException(status_code=404, detail="This plan expired or no longer exists.")
+
+        receipt_id = await run_in_threadpool(start_receipt, "apply_organization")
+        root = get_workspace()
         try:
-            result = await run_in_threadpool(actions.apply_organization, plan["moves"], get_workspace())
+            result = await run_in_threadpool(
+                actions.apply_organization, plan["moves"], root
+            )
+            verified_moves = 0
+            for move in result["moves"]:
+                source = safe_path(move["source"], root)
+                target = safe_path(move["target"], root, must_exist=True)
+                if not source.exists() and target.is_file():
+                    verified_moves += 1
+            result["verified_moves"] = verified_moves
+            app.state.pending_plans.pop(plan_id, None)
+
+            if verified_moves != result["moved_count"]:
+                summary = (
+                    "Organization ran but post-action verification was inconclusive; "
+                    "inspect the workspace before retrying."
+                )
+                await run_in_threadpool(
+                    finish_receipt,
+                    receipt_id,
+                    "interrupted",
+                    summary,
+                    receipt_facts("apply_organization", result),
+                )
+                return {
+                    "kind": "error",
+                    "message": summary,
+                    "receipt_id": receipt_id,
+                    "result": result,
+                }
+
+            await run_in_threadpool(
+                finish_receipt,
+                receipt_id,
+                "succeeded",
+                receipt_summary("apply_organization", result),
+                receipt_facts("apply_organization", result),
+            )
         except (OSError, ValueError) as exc:
+            app.state.pending_plans.pop(plan_id, None)
+            await run_in_threadpool(
+                finish_receipt,
+                receipt_id,
+                "failed",
+                "File organization failed; inspect the workspace before retrying.",
+            )
             raise HTTPException(
                 status_code=409,
-                detail="The plan could not be applied safely. Nothing was intentionally overwritten.",
+                detail=(
+                    "The plan could not be applied safely. Inspect the workspace before retrying. "
+                    f"Receipt: {receipt_id}"
+                ),
             ) from exc
-        app.state.pending_plans.pop(plan_id, None)
-    return {"kind": "result", "message": _result_message(result), "result": result}
+    return {
+        "kind": "result",
+        "message": _result_message(result),
+        "result": result,
+        "receipt_id": receipt_id,
+    }
 
 
 @app.delete("/api/plans/{plan_id}")
