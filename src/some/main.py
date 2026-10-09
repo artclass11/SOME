@@ -9,7 +9,6 @@ import uuid
 from collections import defaultdict, deque
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
@@ -93,6 +92,19 @@ def _result_message(result: dict[str, Any]) -> str:
 @app.middleware("http")
 async def secure_local_api(request, call_next):
     """Apply basic hardening and per-process request limits; not remote auth."""
+    if request.url.path == "/api/upload" and request.method == "POST":
+        raw_length = request.headers.get("content-length")
+        if raw_length:
+            try:
+                request_length = int(raw_length)
+            except ValueError:
+                return JSONResponse(status_code=400, content={"detail": "Invalid request length."})
+            # Multipart framing adds a small overhead around the actual 10 MiB file limit.
+            if request_length > actions.MAX_UPLOAD_BYTES + 1024 * 1024:
+                return JSONResponse(
+                    status_code=413,
+                    content={"detail": "Uploads are limited to 10 MiB."},
+                )
     if request.url.path.startswith("/api/"):
         origin = request.headers.get("origin")
         if origin and request.method in {"POST", "PUT", "PATCH", "DELETE"}:
@@ -265,7 +277,7 @@ async def chat(body: ChatRequest) -> dict[str, Any]:
         return {"kind": "result", "message": _result_message(result), "result": result}
     except (ValueError, FileNotFoundError) as exc:
         return {"kind": "error", "message": str(exc)}
-    except OSError as exc:
+    except OSError:
         return {
             "kind": "error",
             "message": "The local operation failed. Check workspace permissions and available disk space.",
