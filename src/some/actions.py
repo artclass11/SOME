@@ -233,7 +233,17 @@ def clean_csv(filename: str, root: Path | None = None) -> dict[str, Any]:
             writer.writerow(safe_headers)
             for row in unique:
                 writer.writerow([_safe_csv_cell(value) for value in row])
-        temp.replace(target)
+        # Publish with a no-clobber hard link: another file created at the target
+        # between preview and publish is never silently overwritten.
+        while True:
+            try:
+                os.link(temp, target)
+                break
+            except FileExistsError:
+                target_name = f"{source.stem}.cleaned-{number}.csv"
+                number += 1
+                target = safe_path(f"outputs/{target_name}", base)
+        temp.unlink(missing_ok=True)
     finally:
         if temp.exists():
             temp.unlink(missing_ok=True)
@@ -261,7 +271,8 @@ def create_note(content: str, root: Path | None = None) -> dict[str, Any]:
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     target_name = safe_filename(f"{stamp}-{uuid.uuid4().hex[:8]}.txt")
     target = safe_path(f"notes/{target_name}", base)
-    target.write_text(content.strip() + "\n", encoding="utf-8")
+    with target.open("x", encoding="utf-8", newline="") as stream:
+        stream.write(content.strip() + "\n")
     return {
         "action": "create_note",
         "file": target.relative_to(base).as_posix(),
@@ -313,8 +324,10 @@ def apply_organization(moves: list[dict[str, str]], root: Path | None = None) ->
     try:
         for source, target, _, _ in validated:
             target.parent.mkdir(parents=True, exist_ok=True)
-            # Revalidate after directory creation and immediately before the move.
-            if source.is_symlink() or target.parent.is_symlink() or target.exists():
+            # Re-resolve all path segments after creating directories and before the move.
+            source = safe_path(source_name, base, must_exist=True)
+            target = safe_path(target_name, base)
+            if source.parent != base or source.is_symlink() or target.exists():
                 raise ValueError("A path changed during organization; no overwrite was allowed.")
             shutil.move(str(source), str(target))
             completed.append((source, target))
