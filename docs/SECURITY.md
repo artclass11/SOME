@@ -10,13 +10,15 @@
 - Upload size, message length, CSV rows, and scan work are capped.
 - Uploaded files are treated as data and are never executed.
 - Frontend JavaScript is served as a same-origin static asset; the Content Security Policy disallows inline scripts.
-- File organization checks all proposed paths before moving files, avoids overwriting destinations, and attempts rollback after a later move fails.
+- File organization checks all proposed paths before moving files, avoids overwriting destinations, attempts rollback after a later move fails, and verifies source/destination state after success.
+- SQLite receipts persist action states, timestamps, and count-only outcome facts without raw prompts or file paths.
+- On startup, unfinished receipts are marked interrupted. SOME does not automatically replay actions whose outcomes may be uncertain.
 
 ## Important deployment warning
 
 This MVP has no user authentication or multi-user authorization. The local server must remain bound to 127.0.0.1. Do not expose it on a LAN or internet, port-forward it, or deploy it as a public hosted service. A loopback bind is not a substitute for authentication, sandboxing, or operating-system protections.
 
-Before any remote deployment, require a security design and review for user identity, strong authorization, tenant isolation, CSRF/origin policy, TLS, secure session management, secrets, audit trails, resource quotas, persistent queue hardening, abuse prevention, dependency scanning, backups, data deletion, and incident response. The current origin and rate checks are defense-in-depth for a single-user local application, not remote authentication or multi-tenant security. Re-review the threat model whenever new actions or integrations are introduced.
+Receipts are local audit metadata, not tamper-proof logs. Anyone with access to the local account and receipt database may be able to inspect or alter them. Protect the host account and include the receipt database in appropriate backup/deletion policies. The database intentionally excludes raw note content and CSV values.\n\nBefore any remote deployment, require a security design and review for user identity, strong authorization, tenant isolation, CSRF/origin policy, TLS, secure session management, secrets, audit trails, resource quotas, persistent queue hardening, abuse prevention, dependency scanning, backups, data deletion, and incident response. The current origin and rate checks are defense-in-depth for a single-user local application, not remote authentication or multi-tenant security. Re-review the threat model whenever new actions or integrations are introduced.
 
 ## Data handling
 
