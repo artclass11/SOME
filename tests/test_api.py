@@ -53,7 +53,7 @@ def test_upload_is_stored_as_data_and_can_be_cleaned(tmp_path: Path, monkeypatch
     assert upload_receipt.status_code == 200
     assert upload_receipt.json()["action"] == "upload_file"
     assert upload_receipt.json()["status"] == "succeeded"
-    assert upload_receipt.json()["facts"]["size_bytes"] == len(b"name,email\\nAlice,a@example.com\\n")
+    assert upload_receipt.json()["facts"]["size_bytes"] == len(b"name,email\nAlice,a@example.com\n")
     stored = root / uploaded.json()["file"]
     assert stored.is_file()
     assert stored.read_bytes().startswith(b"name,email")
