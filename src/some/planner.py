@@ -45,6 +45,13 @@ def _choose_csv(message: str, csv_files: list[str]) -> dict[str, Any]:
         ]
         if len(matches) == 1:
             return {"file": matches[0]}
+        # Uploads receive a unique prefix to avoid overwrites; accept the original basename.
+        prefixed = [
+            path for path in csv_files
+            if PurePosixPath(path).name.casefold().endswith("-" + token)
+        ]
+        if len(prefixed) == 1:
+            return {"file": prefixed[0]}
         return {"file_error": "not_found"}
 
     if len(csv_files) == 1:
