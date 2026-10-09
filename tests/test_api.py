@@ -80,3 +80,21 @@ def test_cross_origin_state_changes_are_rejected(tmp_path: Path, monkeypatch):
     )
     assert response.status_code == 403
     assert (root / "keep.txt").exists()
+
+
+def test_artifacts_can_be_downloaded_only_from_the_workspace(tmp_path: Path, monkeypatch):
+    root = tmp_path / "workspace"
+    root.mkdir()
+    monkeypatch.setenv("SOME_WORKSPACE", str(root))
+    client = TestClient(app)
+
+    saved = client.post("/api/chat", json={"message": "create note: private reminder"})
+    assert saved.status_code == 200
+    relative = saved.json()["result"]["file"]
+    downloaded = client.get("/api/artifacts/" + relative)
+    assert downloaded.status_code == 200
+    assert downloaded.content == b"private reminder\n"
+    assert downloaded.headers["cache-control"] == "no-store"
+
+    denied = client.get("/api/artifacts/..%2Foutside.txt")
+    assert denied.status_code == 404
