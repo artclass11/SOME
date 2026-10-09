@@ -145,6 +145,8 @@ def receipt_facts(action: str, result: dict[str, Any]) -> dict[str, int | bool]:
         }
     if action == "create_note":
         return {"characters_saved": int(result.get("characters_saved", 0))}
+    if action == "upload_file":
+        return {"size_bytes": int(result.get("size_bytes", 0))}
     if action == "preview_organization":
         return {"move_count": int(result.get("move_count", 0))}
     if action == "apply_organization":
@@ -176,6 +178,8 @@ def receipt_summary(action: str, result: dict[str, Any]) -> str:
         )
     if action == "create_note":
         return f"Saved note ({int(result.get('characters_saved', 0))} characters)."
+    if action == "upload_file":
+        return f"Uploaded file data ({int(result.get('size_bytes', 0))} bytes); file was not executed."
     if action == "preview_organization":
         return f"Created a preview for {int(result.get('move_count', 0))} file move(s). No files moved."
     if action == "apply_organization":
