@@ -221,6 +221,7 @@ async def upload_file(file: Annotated[UploadFile, File()]) -> dict[str, Any]:
 
     upload_dir = safe_path("uploads", root)
     upload_dir.mkdir(parents=True, exist_ok=True)
+    receipt_id = await run_in_threadpool(start_receipt, "upload_file")
     stored_name = f"{uuid.uuid4().hex[:12]}-{filename}"
     target = safe_path(f"uploads/{stored_name}", root)
     size = 0
@@ -236,18 +237,32 @@ async def upload_file(file: Annotated[UploadFile, File()]) -> dict[str, Any]:
                 stream.write(chunk)
     except HTTPException:
         target.unlink(missing_ok=True)
+        await run_in_threadpool(
+            finish_receipt, receipt_id, "failed", "Upload rejected; no completed file was recorded."
+        )
         raise
     except OSError as exc:
         target.unlink(missing_ok=True)
+        await run_in_threadpool(
+            finish_receipt, receipt_id, "failed", "Upload failed; inspect the workspace before retrying."
+        )
         raise HTTPException(status_code=500, detail="The file could not be stored locally.") from exc
     finally:
         await file.close()
 
+    await run_in_threadpool(
+        finish_receipt,
+        receipt_id,
+        "succeeded",
+        f"Uploaded file data ({size} bytes); file was not executed.",
+        {"size_bytes": size},
+    )
     return {
         "ok": True,
         "message": f"Saved {filename}. The file was stored as data and was not executed.",
         "file": f"uploads/{stored_name}",
         "size_bytes": size,
+        "receipt_id": receipt_id,
     }
 
 
