@@ -32,7 +32,7 @@ def test_upload_is_stored_as_data_and_can_be_cleaned(tmp_path: Path, monkeypatch
 
     uploaded = client.post(
         "/api/upload",
-        files={"file": ("contacts.csv", b"name,email\\nAlice,a@example.com\\n", "text/csv")},
+        files={"file": ("contacts.csv", b"name,email\nAlice,a@example.com\n", "text/csv")},
     )
     assert uploaded.status_code == 200
     stored = root / uploaded.json()["file"]
