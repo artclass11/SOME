@@ -1,5 +1,9 @@
+import errno
 from pathlib import Path
 
+import pytest
+
+import some.actions as action_module
 from some.actions import (
     apply_organization,
     clean_csv,
@@ -78,3 +82,35 @@ def test_create_note_saves_user_supplied_content(tmp_path: Path):
     assert note.is_file()
     assert note.read_text(encoding="utf-8") == "Call the supplier tomorrow.\n"
     assert result["characters_saved"] == len("Call the supplier tomorrow.")
+
+
+def test_organization_rolls_back_completed_moves_after_later_failure(
+    tmp_path: Path, monkeypatch
+):
+    root = tmp_path / "workspace"
+    root.mkdir()
+    (root / "one.txt").write_text("one", encoding="utf-8")
+    (root / "two.txt").write_text("two", encoding="utf-8")
+    original_link = action_module.os.link
+    calls = 0
+
+    def fail_second_link(source, target, *args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError(errno.EIO, "simulated destination failure")
+        return original_link(source, target, *args, **kwargs)
+
+    monkeypatch.setattr(action_module.os, "link", fail_second_link)
+    moves = [
+        {"source": "one.txt", "target": "organized/documents/one.txt"},
+        {"source": "two.txt", "target": "organized/documents/two.txt"},
+    ]
+
+    with pytest.raises(OSError, match="simulated destination failure"):
+        apply_organization(moves, root)
+
+    assert (root / "one.txt").read_text(encoding="utf-8") == "one"
+    assert (root / "two.txt").read_text(encoding="utf-8") == "two"
+    assert not (root / "organized" / "documents" / "one.txt").exists()
+    assert not (root / "organized" / "documents" / "two.txt").exists()

@@ -13,6 +13,7 @@ SOME is not a chatbot that stops at paragraphs. Its agent maps a short message t
 - **Clean CSV files** by normalizing headers/whitespace and removing duplicate rows, then write a separate output.
 - **Preview file organization** by file type. Moving files requires a separate confirmation.
 - **Create notes** from text you provide.
+- **Review operation results** through a bounded action layer and same-origin local web interface.
 - **Use an optional local Ollama model** to classify requests into an allowlisted action schema. The model cannot run shell commands or invent tools; deterministic routing works without a model.
 
 The interface is a small, responsive, dark chat UI. The runtime executes actions instead of presenting generated prose as completed work.
@@ -67,7 +68,7 @@ When configured, SOME asks the local model for a JSON action classification. It 
 
 ## Project status and roadmap
 
-See [ARCHITECTURE.md](docs/ARCHITECTURE.md), [SECURITY.md](docs/SECURITY.md), and [CONTRIBUTING.md](CONTRIBUTING.md). Priorities: stronger automated tests, action receipts, background jobs for large files, auth and isolation before hosted deployment, then carefully scoped integrations (calendar, email, messaging) with explicit permissions.
+See [ARCHITECTURE.md](docs/ARCHITECTURE.md), [SECURITY.md](docs/SECURITY.md), and [CONTRIBUTING.md](CONTRIBUTING.md). CI now checks Python 3.11–3.13, runs regression tests, compiles Python, and validates front-end JavaScript. CodeQL and Dependabot workflows add scheduled static analysis and dependency update proposals. Remaining priorities: durable action receipts, background jobs for large files, authenticated multi-user isolation before hosted deployment, then carefully scoped integrations (calendar, email, messaging) with explicit permissions.
 
 ## License
 
