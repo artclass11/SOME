@@ -14,8 +14,9 @@ import sqlite3
 import threading
 import uuid
 from datetime import UTC, datetime
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 from .security import get_workspace
 
