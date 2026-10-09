@@ -46,6 +46,9 @@ def _ensure_initialized() -> Path:
             path.parent.mkdir(parents=True, exist_ok=True)
             connection = sqlite3.connect(path, timeout=5)
             try:
+                # Action history can reveal sensitive usage patterns; keep it owner-only.
+                if os.name != "nt":
+                    os.chmod(path, 0o600)
                 connection.execute("PRAGMA journal_mode=WAL")
                 connection.execute("PRAGMA busy_timeout=5000")
                 connection.execute(
