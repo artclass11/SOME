@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import csv
+import errno
 import hashlib
 import os
 import re
 import shutil
 import uuid
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -268,7 +269,7 @@ def create_note(content: str, root: Path | None = None) -> dict[str, Any]:
     base = (root or get_workspace()).resolve(strict=True)
     notes_dir = safe_path("notes", base)
     notes_dir.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
     target_name = safe_filename(f"{stamp}-{uuid.uuid4().hex[:8]}.txt")
     target = safe_path(f"notes/{target_name}", base)
     with target.open("x", encoding="utf-8", newline="") as stream:
@@ -303,6 +304,39 @@ def preview_organization(root: Path | None = None) -> dict[str, Any]:
     return {"action": "preview_organization", "move_count": len(moves), "moves": moves}
 
 
+
+def _move_no_clobber(source: Path, target: Path) -> None:
+    """Move a regular file without overwriting a destination created concurrently."""
+    fallback_errnos = {errno.EXDEV, errno.EPERM, errno.EACCES, errno.ENOTSUP}
+    if hasattr(errno, "EOPNOTSUPP"):
+        fallback_errnos.add(errno.EOPNOTSUPP)
+
+    try:
+        os.link(source, target, follow_symlinks=False)
+    except OSError as exc:
+        if exc.errno not in fallback_errnos:
+            raise
+        temporary = target.parent / f".{target.name}.{uuid.uuid4().hex}.tmp"
+        try:
+            with source.open("rb") as reader, temporary.open("xb") as writer:
+                shutil.copyfileobj(reader, writer, length=1024 * 1024)
+                writer.flush()
+                os.fsync(writer.fileno())
+            shutil.copystat(source, temporary, follow_symlinks=False)
+            os.link(temporary, target, follow_symlinks=False)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    try:
+        source.unlink()
+    except OSError:
+        try:
+            target.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+
+
 def apply_organization(moves: list[dict[str, str]], root: Path | None = None) -> dict[str, Any]:
     base = (root or get_workspace()).resolve(strict=True)
     validated: list[tuple[Path, Path, str, str]] = []
@@ -322,21 +356,22 @@ def apply_organization(moves: list[dict[str, str]], root: Path | None = None) ->
 
     completed: list[tuple[Path, Path]] = []
     try:
-        for source, target, _, _ in validated:
+        for _, _, source_name, target_name in validated:
+            # Create parents only inside the workspace, then revalidate every segment.
+            target = safe_path(target_name, base)
             target.parent.mkdir(parents=True, exist_ok=True)
-            # Re-resolve all path segments after creating directories and before the move.
             source = safe_path(source_name, base, must_exist=True)
             target = safe_path(target_name, base)
             if source.parent != base or source.is_symlink() or target.exists():
                 raise ValueError("A path changed during organization; no overwrite was allowed.")
-            shutil.move(str(source), str(target))
+            _move_no_clobber(source, target)
             completed.append((source, target))
     except Exception:
         for source, target in reversed(completed):
             try:
                 source.parent.mkdir(parents=True, exist_ok=True)
                 if target.exists() and not source.exists():
-                    shutil.move(str(target), str(source))
+                    _move_no_clobber(target, source)
             except OSError:
                 # The original exception remains the actionable failure; manual recovery may be needed.
                 pass
