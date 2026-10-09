@@ -18,6 +18,11 @@
     .brand-name { font-size:16px; font-weight:750; letter-spacing:.11em; }
     .tagline { color:var(--muted); font-size:12px; margin-top:1px; }
     .status { display:flex; align-items:center; gap:8px; color:var(--muted); font-size:12px; white-space:nowrap; }
+    .header-actions { display:flex; align-items:center; gap:12px; }
+    .receipt-item { align-items:flex-start !important; flex-direction:column; gap:6px !important; }
+    .receipt-details { display:flex; flex-wrap:wrap; gap:8px 14px; width:100%; justify-content:space-between; }
+    .receipt-state { text-transform:uppercase; letter-spacing:.08em; font-size:10px; }
+    .receipt-recovery { padding:7px 9px; border-radius:8px; font-size:11px; }
     .dot { width:7px; height:7px; border-radius:50%; background:var(--accent); box-shadow:0 0 12px #d9f36a44; }
     main { flex:1; width:100%; max-width:790px; margin:0 auto; display:flex; flex-direction:column; min-height:0; }
     .intro { text-align:center; padding:60px 16px 28px; }
@@ -83,7 +88,10 @@
           <div class="tagline">Small Operations, Massive Execution</div>
         </div>
       </div>
-      <div class="status"><span class="dot"></span><span id="status-text">Local workspace</span></div>
+      <div class="header-actions">
+        <button class="secondary" id="activity-toggle" type="button" aria-expanded="false" aria-controls="activity-panel">Activity</button>
+        <div class="status"><span class="dot"></span><span id="status-text">Local workspace</span></div>
+      </div>
     </header>
 
     <main>
@@ -101,6 +109,11 @@
       </section>
 
       <section class="messages" id="messages" aria-live="polite" aria-label="Conversation"></section>
+
+      <section class="result hidden" id="activity-panel" aria-label="Recent action history">
+        <div class="result-title">Recent activity · persisted locally</div>
+        <ul class="result-list" id="activity-list"><li class="subtle">Open activity to load receipts.</li></ul>
+      </section>
 
       <section class="composer-wrap" aria-label="Message composer">
         <form class="composer" id="composer">
