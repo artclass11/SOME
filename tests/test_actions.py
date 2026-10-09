@@ -47,6 +47,10 @@ def test_csv_profile_and_clean_preserve_source_and_remove_duplicate_rows(tmp_pat
     assert "alice@example.com" in output
     assert "'=2+2" in output
 
+    second = clean_csv("customers.csv", root)
+    assert second["output"] != result["output"]
+    assert (root / result["output"]).read_text(encoding="utf-8") == output
+
 
 def test_organization_is_previewed_before_it_moves_anything(tmp_path: Path):
     root = tmp_path / "workspace"
