@@ -63,3 +63,20 @@ def test_file_moves_need_a_second_confirmation(tmp_path: Path, monkeypatch):
 
     expired = client.post(f"/api/plans/{preview['plan_id']}/confirm")
     assert expired.status_code == 404
+
+
+
+def test_cross_origin_state_changes_are_rejected(tmp_path: Path, monkeypatch):
+    root = tmp_path / "workspace"
+    root.mkdir()
+    (root / "keep.txt").write_text("keep", encoding="utf-8")
+    monkeypatch.setenv("SOME_WORKSPACE", str(root))
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/chat",
+        json={"message": "organize my files"},
+        headers={"Origin": "https://untrusted.example"},
+    )
+    assert response.status_code == 403
+    assert (root / "keep.txt").exists()
