@@ -98,3 +98,56 @@ def test_artifacts_can_be_downloaded_only_from_the_workspace(tmp_path: Path, mon
 
     denied = client.get("/api/artifacts/..%2Foutside.txt")
     assert denied.status_code == 404
+
+
+def test_ui_uses_external_script_and_restrictive_script_csp():
+    client = TestClient(app)
+    page = client.get("/")
+    assert page.status_code == 200
+    assert '<script src="/static/app.js" defer></script>' in page.text
+    assert "<script>" not in page.text.lower()
+    assert "script-src 'self';" in page.headers["content-security-policy"]
+
+    script = client.get("/static/app.js")
+    assert script.status_code == 200
+    assert "fetch(" in script.text
+    assert script.headers["x-content-type-options"] == "nosniff"
+
+
+def test_rejected_cross_origin_responses_keep_security_headers(tmp_path: Path, monkeypatch):
+    root = tmp_path / "workspace"
+    root.mkdir()
+    monkeypatch.setenv("SOME_WORKSPACE", str(root))
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/chat",
+        json={"message": "create note: must not be created"},
+        headers={"Origin": "https://untrusted.example"},
+    )
+
+    assert response.status_code == 403
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert "script-src 'self';" in response.headers["content-security-policy"]
+    assert response.headers["cache-control"] == "no-store"
+    assert not (root / "notes").exists()
+
+
+def test_canceling_a_plan_prevents_later_confirmation(tmp_path: Path, monkeypatch):
+    root = tmp_path / "workspace"
+    root.mkdir()
+    (root / "scan.pdf").write_bytes(b"pdf")
+    monkeypatch.setenv("SOME_WORKSPACE", str(root))
+    client = TestClient(app)
+
+    preview = client.post("/api/chat", json={"message": "organize my files"}).json()
+    assert preview["kind"] == "plan"
+
+    cancelled = client.delete(f"/api/plans/{preview['plan_id']}")
+    assert cancelled.status_code == 200
+    assert cancelled.json()["status"] == "cancelled"
+    assert (root / "scan.pdf").exists()
+
+    confirm = client.post(f"/api/plans/{preview['plan_id']}/confirm")
+    assert confirm.status_code == 404
+    assert (root / "scan.pdf").exists()
