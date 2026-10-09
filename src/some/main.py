@@ -31,6 +31,7 @@ from .receipts import (
 )
 from .security import get_workspace, safe_filename, safe_path
 
+
 @contextlib.asynccontextmanager
 async def lifespan(_: FastAPI):
     # SOME currently runs one local worker. Interrupted operations are never
