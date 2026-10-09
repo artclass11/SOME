@@ -36,6 +36,14 @@ def _note_content(message: str) -> str | None:
 
 def _choose_csv(message: str, csv_files: list[str]) -> dict[str, Any]:
     """Choose only from existing CSV files returned by the filesystem scan."""
+    mentioned = [
+        path for path in csv_files
+        if PurePosixPath(path).name.casefold() in message.casefold()
+        or path.casefold() in message.casefold()
+    ]
+    if len(mentioned) == 1:
+        return {"file": mentioned[0]}
+
     explicit = re.findall(r"[\w().-]+\.csv", message, flags=re.IGNORECASE)
     if explicit:
         token = explicit[-1].casefold()
