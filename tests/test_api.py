@@ -22,6 +22,19 @@ def test_local_chat_api_and_security_headers(tmp_path: Path, monkeypatch):
     assert result.status_code == 200
     assert result.json()["kind"] == "result"
     assert result.json()["result"]["files"][0]["path"] == "todo.txt"
+    assert result.json()["receipt_id"]
+
+    receipt = client.get(f"/api/receipts/{result.json()['receipt_id']}")
+    assert receipt.status_code == 200
+    assert receipt.json()["status"] == "succeeded"
+    assert receipt.json()["action"] == "list_files"
+    assert receipt.json()["facts"]["count"] == 1
+    assert "todo.txt" not in receipt.text
+
+    history = client.get("/api/receipts?limit=10")
+    assert history.status_code == 200
+    assert history.json()["count"] >= 1
+    assert history.json()["items"][0]["id"] == result.json()["receipt_id"]
 
 
 def test_upload_is_stored_as_data_and_can_be_cleaned(tmp_path: Path, monkeypatch):
@@ -54,11 +67,21 @@ def test_file_moves_need_a_second_confirmation(tmp_path: Path, monkeypatch):
 
     preview = client.post("/api/chat", json={"message": "organize my files"}).json()
     assert preview["kind"] == "plan"
+    assert preview["receipt_id"]
     assert (root / "scan.pdf").exists()
+
+    preview_receipt = client.get(f"/api/receipts/{preview['receipt_id']}")
+    assert preview_receipt.json()["status"] == "succeeded"
+    assert preview_receipt.json()["facts"]["move_count"] == 1
 
     committed = client.post(f"/api/plans/{preview['plan_id']}/confirm")
     assert committed.status_code == 200
     assert committed.json()["result"]["moved_count"] == 1
+    assert committed.json()["result"]["verified_moves"] == 1
+    assert committed.json()["receipt_id"]
+    committed_receipt = client.get(f"/api/receipts/{committed.json()['receipt_id']}")
+    assert committed_receipt.json()["status"] == "succeeded"
+    assert committed_receipt.json()["facts"]["verified_moves"] == 1
     assert (root / "organized" / "documents" / "scan.pdf").exists()
 
     expired = client.post(f"/api/plans/{preview['plan_id']}/confirm")
@@ -151,3 +174,30 @@ def test_canceling_a_plan_prevents_later_confirmation(tmp_path: Path, monkeypatc
     confirm = client.post(f"/api/plans/{preview['plan_id']}/confirm")
     assert confirm.status_code == 404
     assert (root / "scan.pdf").exists()
+
+
+def test_failed_action_creates_failure_receipt(tmp_path: Path, monkeypatch):
+    root = tmp_path / "workspace"
+    root.mkdir()
+    (root / "broken.csv").write_text("", encoding="utf-8")
+    monkeypatch.setenv("SOME_WORKSPACE", str(root))
+    monkeypatch.setenv("SOME_RECEIPTS_DB", str(tmp_path / "receipts.sqlite3"))
+    client = TestClient(app)
+
+    response = client.post("/api/chat", json={"message": "inspect broken.csv"})
+    assert response.status_code == 200
+    assert response.json()["kind"] == "error"
+    receipt_id = response.json()["receipt_id"]
+    assert receipt_id
+
+    receipt = client.get(f"/api/receipts/{receipt_id}")
+    assert receipt.status_code == 200
+    assert receipt.json()["status"] == "failed"
+    assert receipt.json()["action"] == "profile_csv"
+    assert "broken.csv" not in receipt.text
+
+
+def test_unknown_receipt_is_not_found_and_receipt_limit_is_bounded():
+    client = TestClient(app)
+    assert client.get("/api/receipts/not-a-real-receipt").status_code == 404
+    assert client.get("/api/receipts?limit=101").status_code == 422
