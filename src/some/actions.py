@@ -77,6 +77,17 @@ def list_files(root: Path | None = None) -> dict[str, Any]:
     }
 
 
+def list_csv_files(root: Path | None = None) -> list[str]:
+    """Return all workspace CSV paths, independent of the UI's 500-file display cap."""
+    base = (root or get_workspace()).resolve(strict=True)
+    paths = [
+        item.relative_to(base).as_posix()
+        for item in _walk_regular_files(base)
+        if item.suffix.casefold() == ".csv"
+    ]
+    return sorted(paths, key=str.casefold)
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
