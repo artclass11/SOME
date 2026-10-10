@@ -10,6 +10,9 @@ from typing import Any
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
+MAX_CSV_CANDIDATES = 50
+MAX_MODEL_CSV_CONTEXT = 200
+
 ALLOWED_ACTIONS = {
     "list_files",
     "find_duplicates",
@@ -66,7 +69,13 @@ def _choose_csv(message: str, csv_files: list[str]) -> dict[str, Any]:
         return {"file": csv_files[0]}
     if not csv_files:
         return {"file_error": "none"}
-    return {"file_error": "ambiguous", "candidates": sorted(csv_files, key=str.casefold)}
+    ordered = sorted(csv_files, key=str.casefold)
+    return {
+        "file_error": "ambiguous",
+        "candidates": ordered[:MAX_CSV_CANDIDATES],
+        "candidate_count": len(ordered),
+        "candidates_truncated": len(ordered) > MAX_CSV_CANDIDATES,
+    }
 
 
 def _deterministic_route(message: str, csv_files: list[str]) -> dict[str, Any]:
@@ -128,11 +137,17 @@ def _local_model_route(message: str, csv_files: list[str]) -> dict[str, Any] | N
     if not model:
         return None
 
+    model_csv_files = csv_files[:MAX_MODEL_CSV_CONTEXT]
+    csv_context_note = (
+        f" The list below contains the first {len(model_csv_files)} of {len(csv_files)} CSV paths; "
+        "if the desired file is not listed, return unknown and ask for its exact filename."
+        if len(csv_files) > len(model_csv_files) else ""
+    )
     system_prompt = (
         "Classify the user's request as one action from this exact allowlist: "
         "list_files, find_duplicates, preview_organization, clean_csv, profile_csv, create_note, unknown. "
         "Return JSON with keys action and file only. file must be the exact relative path of an existing "
-        "CSV from this list, or null: " + json.dumps(csv_files, ensure_ascii=False) + ". "
+        "CSV from this list, or null: " + json.dumps(model_csv_files, ensure_ascii=False) + ". " + csv_context_note + " "
         "Never propose shell commands, code, URLs, or new tools. Prefer unknown when uncertain. "
         "A note may only be created when the user's message explicitly starts a note command."
     )
