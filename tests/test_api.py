@@ -216,8 +216,6 @@ def test_csv_discovery_finds_csv_after_the_500_file_ui_cap(tmp_path: Path, monke
         (root / f"a-{index:03}.txt").write_text("not a csv", encoding="utf-8")
     target = root / "z-customers.csv"
     target.write_text("name,amount\nAlice,10\n", encoding="utf-8")
-    monkeypatch.setenv("SOME_WORKSPACE", str(root))
-    monkeypatch.setenv("SOME_RECEIPTS_DB", str(tmp_path / "receipts.sqlite3"))
     monkeypatch.delenv("SOME_OLLAMA_MODEL", raising=False)
     client = TestClient(app)
 
