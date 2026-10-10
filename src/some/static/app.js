@@ -8,6 +8,25 @@ const form = document.getElementById("composer");
     const activityToggle = document.getElementById("activity-toggle");
     const activityPanel = document.getElementById("activity-panel");
     const activityList = document.getElementById("activity-list");
+    const quickPromptButtons = Array.from(document.querySelectorAll("[data-prompt]"));
+    let activeRequests = 0;
+
+    function beginRequest(statusText) {
+      activeRequests += 1;
+      sendButton.disabled = true;
+      uploadInput.disabled = true;
+      quickPromptButtons.forEach(button => { button.disabled = true; });
+      if (statusText) hint.textContent = statusText;
+    }
+
+    function endRequest() {
+      activeRequests = Math.max(0, activeRequests - 1);
+      const busy = activeRequests > 0;
+      sendButton.disabled = busy;
+      uploadInput.disabled = busy;
+      quickPromptButtons.forEach(button => { button.disabled = busy; });
+      if (!busy) hint.textContent = "Your files stay in the local workspace.";
+    }
 
     function el(tag, className, text) {
       const node = document.createElement(tag);
@@ -21,7 +40,7 @@ const form = document.getElementById("composer");
       const wrap = el("article", "message " + role);
       wrap.append(el("div", "who", role === "user" ? "YOU" : "SOME"));
       wrap.append(el("div", "bubble" + (data && data.kind === "error" ? " error" : ""), text));
-      if (data && data.result) wrap.append(renderResult(data.result));
+      if (data && data.result) wrap.append(renderResult(data.result, data.kind));
       if (data && data.kind === "plan" && planId) wrap.append(renderPlanActions(planId));
       if (data && data.receipt_id) {
         wrap.append(el("div", "who", "Receipt · " + data.receipt_id.slice(0, 12)));
@@ -34,9 +53,14 @@ const form = document.getElementById("composer");
       return wrap;
     }
 
-    function renderResult(data) {
+    function renderResult(data, kind) {
       const box = el("div", "result");
-      box.append(el("div", "result-title", (data.action || "Action") + " · verified output"));
+      const title = kind === "error"
+        ? "Operation details · review required"
+        : data.action === "preview_organization"
+          ? "Proposed changes · nothing moved yet"
+          : (data.action || "Action") + " · verified output";
+      box.append(el("div", "result-title", title));
       if (Array.isArray(data.files)) {
         const list = el("ul", "result-list");
         data.files.slice(0, 30).forEach(item => {
@@ -102,28 +126,74 @@ const form = document.getElementById("composer");
       const group = el("div", "plan-actions");
       const confirm = el("button", "primary", "Confirm file moves");
       confirm.type = "button";
-      confirm.addEventListener("click", async () => {
-        confirm.disabled = true;
-        confirm.textContent = "Applying…";
-        try {
-          const result = await api("/api/plans/" + encodeURIComponent(planId) + "/confirm", { method: "POST" });
-          group.replaceWith(el("div", "subtle", "Plan confirmed."));
-          appendMessage("assistant", result.message, result);
-        } catch (error) {
-          confirm.disabled = false;
-          confirm.textContent = "Retry confirmation";
-          appendMessage("assistant", error.message, { kind: "error" });
-        }
-      });
       const cancel = el("button", "secondary", "Cancel");
       cancel.type = "button";
-      cancel.addEventListener("click", async () => {
+      let pending = false;
+      let settled = false;
+
+      function finishPlanNotice(message) {
+        settled = true;
+        group.replaceWith(el("div", "subtle", message));
+        loadActivity().catch(() => {});
+      }
+
+      confirm.addEventListener("click", async () => {
+        if (pending || settled || activeRequests > 0) return;
+        pending = true;
+        confirm.textContent = "Applying…";
+        confirm.disabled = true;
         cancel.disabled = true;
+        beginRequest("Applying approved file moves…");
+        try {
+          const result = await api(
+            "/api/plans/" + encodeURIComponent(planId) + "/confirm",
+            { method: "POST" }
+          );
+          settled = true;
+          group.replaceWith(el("div", "subtle", "Plan completed. See Activity for the receipt."));
+          appendMessage("assistant", result.message, result);
+        } catch (error) {
+          if (error.status === 404 || error.status === 409) {
+            finishPlanNotice("This plan is no longer available. Check Activity before retrying.");
+          } else {
+            confirm.textContent = "Retry confirmation";
+            appendMessage("assistant", error.message, { kind: "error" });
+          }
+        } finally {
+          pending = false;
+          endRequest();
+          if (!settled) {
+            confirm.disabled = false;
+            cancel.disabled = false;
+          }
+        }
+      });
+
+      cancel.addEventListener("click", async () => {
+        if (pending || settled || activeRequests > 0) return;
+        pending = true;
+        cancel.textContent = "Cancelling…";
+        confirm.disabled = true;
+        cancel.disabled = true;
+        beginRequest("Cancelling the pending plan…");
         try {
           await api("/api/plans/" + encodeURIComponent(planId), { method: "DELETE" });
+          settled = true;
           group.replaceWith(el("div", "subtle", "Cancelled. No files were moved."));
         } catch (error) {
-          appendMessage("assistant", error.message, { kind: "error" });
+          if (error.status === 404) {
+            finishPlanNotice("This plan expired or was already handled. Check Activity for its outcome.");
+          } else {
+            cancel.textContent = "Retry cancellation";
+            appendMessage("assistant", error.message, { kind: "error" });
+          }
+        } finally {
+          pending = false;
+          endRequest();
+          if (!settled) {
+            confirm.disabled = false;
+            cancel.disabled = false;
+          }
         }
       });
       group.append(confirm, cancel);
@@ -144,7 +214,11 @@ const form = document.getElementById("composer");
       let result;
       try { result = await response.json(); }
       catch (_) { throw new Error("The local service returned an unreadable response."); }
-      if (!response.ok) throw new Error(result.detail || "The action failed.");
+      if (!response.ok) {
+        const error = new Error(result.detail || "The action failed.");
+        error.status = response.status;
+        throw error;
+      }
       return result;
     }
 
@@ -208,12 +282,11 @@ const form = document.getElementById("composer");
 
     async function sendChat(message) {
       const text = message.trim();
-      if (!text) return;
+      if (!text || activeRequests > 0) return;
       appendMessage("user", text);
       promptInput.value = "";
       resizeInput();
-      sendButton.disabled = true;
-      hint.textContent = "Working on your request…";
+      beginRequest("Working on your request…");
       try {
         const result = await api("/api/chat", {
           method: "POST",
@@ -223,8 +296,7 @@ const form = document.getElementById("composer");
       } catch (error) {
         appendMessage("assistant", error.message || "Could not reach the local service.", { kind: "error" });
       } finally {
-        sendButton.disabled = false;
-        hint.textContent = "Your files stay in the local workspace.";
+        endRequest();
         promptInput.focus();
       }
     }
@@ -246,7 +318,7 @@ const form = document.getElementById("composer");
       }
     });
 
-    document.querySelectorAll("[data-prompt]").forEach(button => {
+    quickPromptButtons.forEach(button => {
       button.addEventListener("click", () => sendChat(button.getAttribute("data-prompt") || ""));
     });
 
@@ -258,21 +330,26 @@ const form = document.getElementById("composer");
         uploadInput.value = "";
         return;
       }
+      if (activeRequests > 0) {
+        uploadInput.value = "";
+        return;
+      }
       appendMessage("user", "Upload: " + file.name + " (" + formatBytes(file.size) + ")");
-      hint.textContent = "Saving file locally…";
+      beginRequest("Saving file locally…");
       const formData = new FormData();
       formData.append("file", file);
       try {
         const response = await fetch("/api/upload", { method: "POST", body: formData });
         const result = await response.json();
         if (!response.ok) throw new Error(result.detail || "Upload failed.");
-        appendMessage("assistant", result.message, { result: {
-          action: "upload_file", file: result.file, size_bytes: result.size_bytes
-        }});
+        appendMessage("assistant", result.message, {
+          result: { action: "upload_file", file: result.file, size_bytes: result.size_bytes },
+          receipt_id: result.receipt_id
+        });
       } catch (error) {
         appendMessage("assistant", error.message, { kind: "error" });
       } finally {
-        hint.textContent = "Your files stay in the local workspace.";
+        endRequest();
         uploadInput.value = "";
       }
     });

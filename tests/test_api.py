@@ -207,3 +207,107 @@ def test_unknown_receipt_is_not_found_and_receipt_limit_is_bounded():
     client = TestClient(app)
     assert client.get("/api/receipts/not-a-real-receipt").status_code == 404
     assert client.get("/api/receipts?limit=101").status_code == 422
+
+
+def test_csv_discovery_finds_csv_after_the_500_file_ui_cap(tmp_path: Path, monkeypatch):
+    root = tmp_path / "workspace"
+    root.mkdir()
+    for index in range(501):
+        (root / f"a-{index:03}.txt").write_text("not a csv", encoding="utf-8")
+    target = root / "z-customers.csv"
+    target.write_text("name,amount\nAlice,10\n", encoding="utf-8")
+    monkeypatch.setenv("SOME_WORKSPACE", str(root))
+    monkeypatch.setenv("SOME_RECEIPTS_DB", str(tmp_path / "receipts.sqlite3"))
+    monkeypatch.delenv("SOME_OLLAMA_MODEL", raising=False)
+    client = TestClient(app)
+
+    # The UI inventory is intentionally capped at 500 displayed files.
+    inventory = client.get("/api/files").json()
+    assert inventory["truncated"] is True
+    assert all(item["path"] != "z-customers.csv" for item in inventory["files"])
+
+    response = client.post("/api/chat", json={"message": "inspect z-customers.csv"})
+    assert response.status_code == 200
+    assert response.json()["kind"] == "result"
+    assert response.json()["result"]["row_count"] == 1
+
+
+def test_non_csv_rule_action_skips_unneeded_inventory_walk(
+    tmp_path: Path, monkeypatch
+):
+    import some.main as main_module
+
+    root = tmp_path / "workspace"
+    root.mkdir()
+    monkeypatch.setenv("SOME_WORKSPACE", str(root))
+    monkeypatch.setenv("SOME_RECEIPTS_DB", str(tmp_path / "receipts.sqlite3"))
+    monkeypatch.setenv("SOME_OLLAMA_MODEL", "   ")
+
+    def fail_if_called(_root):
+        raise AssertionError("CSV inventory should not run for an explicit note command")
+
+    monkeypatch.setattr(main_module, "_files_for_planner", fail_if_called)
+    client = TestClient(app)
+    response = client.post("/api/chat", json={"message": "create note: keep this local"})
+
+    assert response.status_code == 200
+    assert response.json()["kind"] == "result"
+    assert (root / response.json()["result"]["file"]).read_text(encoding="utf-8") == "keep this local\n"
+
+
+def test_frontend_preserves_upload_receipts_and_prevents_duplicate_plan_actions():
+    client = TestClient(app)
+    script = client.get("/static/app.js")
+    assert script.status_code == 200
+    assert "receipt_id: result.receipt_id" in script.text
+    assert "if (pending || settled || activeRequests > 0) return;" in script.text
+    assert "error.status = response.status" in script.text
+    assert "Operation details · review required" in script.text
+    assert "Proposed changes · nothing moved yet" in script.text
+
+
+def test_ambiguous_csv_prompt_is_bounded_for_large_workspaces(
+    tmp_path: Path, monkeypatch
+):
+    root = tmp_path / "workspace"
+    root.mkdir()
+    for index in range(75):
+        (root / f"report-{index:03}.csv").write_text(
+            "name,value\nAlice,1\n", encoding="utf-8"
+        )
+    monkeypatch.setenv("SOME_WORKSPACE", str(root))
+    monkeypatch.setenv("SOME_RECEIPTS_DB", str(tmp_path / "receipts.sqlite3"))
+    monkeypatch.delenv("SOME_OLLAMA_MODEL", raising=False)
+    client = TestClient(app)
+
+    response = client.post("/api/chat", json={"message": "inspect CSV"})
+    assert response.status_code == 200
+    assert response.json()["kind"] == "help"
+    prompt = response.json()["message"]
+    assert "first 50 of 75 CSV files" in prompt
+    assert prompt.count("• report-") == 50
+    assert "Type the exact filename" in prompt
+
+
+def test_csv_selection_prefers_explicit_relative_path_when_basenames_collide(
+    tmp_path: Path, monkeypatch
+):
+    root = tmp_path / "workspace"
+    (root / "region-a").mkdir(parents=True)
+    (root / "region-b").mkdir(parents=True)
+    (root / "region-a" / "sales.csv").write_text(
+        "name,value\nAlice,1\n", encoding="utf-8"
+    )
+    (root / "region-b" / "sales.csv").write_text(
+        "name,value\nBob,2\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("SOME_WORKSPACE", str(root))
+    monkeypatch.setenv("SOME_RECEIPTS_DB", str(tmp_path / "receipts.sqlite3"))
+    monkeypatch.delenv("SOME_OLLAMA_MODEL", raising=False)
+    client = TestClient(app)
+
+    response = client.post("/api/chat", json={"message": "inspect region-b/sales.csv"})
+    assert response.status_code == 200
+    assert response.json()["kind"] == "result"
+    assert response.json()["result"]["file"] == "region-b/sales.csv"
+    assert response.json()["result"]["row_count"] == 1

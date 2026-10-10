@@ -82,10 +82,14 @@ def _clean_expired_plans() -> None:
 
 
 def _files_for_planner(root: Path) -> list[str]:
-    return [
-        item["path"] for item in actions.list_files(root)["files"]
-        if item["path"].casefold().endswith(".csv")
-    ]
+    return actions.list_csv_files(root)
+
+
+def _needs_csv_context(message: str) -> bool:
+    lower = message.casefold()
+    return ".csv" in lower or any(
+        term in lower for term in ("csv", "spreadsheet", "sheet data", "table data")
+    )
 
 
 def _result_message(result: dict[str, Any]) -> str:
@@ -276,7 +280,13 @@ async def chat(body: ChatRequest) -> dict[str, Any]:
     receipt_id: str | None = None
     action_name: str | None = None
     try:
-        csv_files = await run_in_threadpool(_files_for_planner, root)
+        # Avoid walking the workspace twice for deterministic non-CSV actions.
+        # Model inference retains the full CSV context when it is enabled.
+        needs_inventory = bool(os.environ.get("SOME_OLLAMA_MODEL", "").strip()) or _needs_csv_context(message)
+        csv_files = (
+            await run_in_threadpool(_files_for_planner, root)
+            if needs_inventory else []
+        )
         intent = await run_in_threadpool(route_message, message, csv_files)
         name = intent["action"]
         action_name = name
@@ -295,6 +305,12 @@ async def chat(body: ChatRequest) -> dict[str, Any]:
             elif error == "ambiguous":
                 options = "\n".join(f"• {item}" for item in args.get("candidates", []))
                 prompt = f"Which CSV should I use? Mention its filename:\n{options}"
+                if args.get("candidates_truncated"):
+                    prompt += (
+                        f"\nShowing the first {len(args.get('candidates', []))} of "
+                        f"{args.get('candidate_count', len(args.get('candidates', [])))} CSV files. "
+                        "Type the exact filename to use a file not shown."
+                    )
             else:
                 prompt = "I couldn't find that CSV inside the workspace. Upload it or check the filename."
             return {"kind": "help", "message": prompt}

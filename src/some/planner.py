@@ -10,6 +10,9 @@ from typing import Any
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
+MAX_CSV_CANDIDATES = 50
+MAX_MODEL_CSV_CONTEXT = 200
+
 ALLOWED_ACTIONS = {
     "list_files",
     "find_duplicates",
@@ -36,10 +39,17 @@ def _note_content(message: str) -> str | None:
 
 def _choose_csv(message: str, csv_files: list[str]) -> dict[str, Any]:
     """Choose only from existing CSV files returned by the filesystem scan."""
+    lower_message = message.casefold()
+    # Prefer an explicitly typed relative path before matching basenames. Otherwise
+    # two folders containing "sales.csv" make even "region-b/sales.csv" ambiguous.
+    path_mentions = [path for path in csv_files if path.casefold() in lower_message]
+    if len(path_mentions) == 1:
+        return {"file": path_mentions[0]}
+
     mentioned = [
         path for path in csv_files
-        if PurePosixPath(path).name.casefold() in message.casefold()
-        or path.casefold() in message.casefold()
+        if PurePosixPath(path).name.casefold() in lower_message
+        or path.casefold() in lower_message
     ]
     if len(mentioned) == 1:
         return {"file": mentioned[0]}
@@ -66,7 +76,13 @@ def _choose_csv(message: str, csv_files: list[str]) -> dict[str, Any]:
         return {"file": csv_files[0]}
     if not csv_files:
         return {"file_error": "none"}
-    return {"file_error": "ambiguous", "candidates": sorted(csv_files, key=str.casefold)}
+    ordered = sorted(csv_files, key=str.casefold)
+    return {
+        "file_error": "ambiguous",
+        "candidates": ordered[:MAX_CSV_CANDIDATES],
+        "candidate_count": len(ordered),
+        "candidates_truncated": len(ordered) > MAX_CSV_CANDIDATES,
+    }
 
 
 def _deterministic_route(message: str, csv_files: list[str]) -> dict[str, Any]:
@@ -128,11 +144,17 @@ def _local_model_route(message: str, csv_files: list[str]) -> dict[str, Any] | N
     if not model:
         return None
 
+    model_csv_files = csv_files[:MAX_MODEL_CSV_CONTEXT]
+    csv_context_note = (
+        f" The list below contains the first {len(model_csv_files)} of {len(csv_files)} CSV paths; "
+        "if the desired file is not listed, return unknown and ask for its exact filename."
+        if len(csv_files) > len(model_csv_files) else ""
+    )
     system_prompt = (
         "Classify the user's request as one action from this exact allowlist: "
         "list_files, find_duplicates, preview_organization, clean_csv, profile_csv, create_note, unknown. "
         "Return JSON with keys action and file only. file must be the exact relative path of an existing "
-        "CSV from this list, or null: " + json.dumps(csv_files, ensure_ascii=False) + ". "
+        "CSV from this list, or null: " + json.dumps(model_csv_files, ensure_ascii=False) + ". " + csv_context_note + " "
         "Never propose shell commands, code, URLs, or new tools. Prefer unknown when uncertain. "
         "A note may only be created when the user's message explicitly starts a note command."
     )
