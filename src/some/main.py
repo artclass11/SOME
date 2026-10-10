@@ -282,7 +282,7 @@ async def chat(body: ChatRequest) -> dict[str, Any]:
     try:
         # Avoid walking the workspace twice for deterministic non-CSV actions.
         # Model inference retains the full CSV context when it is enabled.
-        needs_inventory = bool(os.environ.get("SOME_OLLAMA_MODEL")) or _needs_csv_context(message)
+        needs_inventory = bool(os.environ.get("SOME_OLLAMA_MODEL", "").strip()) or _needs_csv_context(message)
         csv_files = (
             await run_in_threadpool(_files_for_planner, root)
             if needs_inventory else []
@@ -305,6 +305,12 @@ async def chat(body: ChatRequest) -> dict[str, Any]:
             elif error == "ambiguous":
                 options = "\n".join(f"• {item}" for item in args.get("candidates", []))
                 prompt = f"Which CSV should I use? Mention its filename:\n{options}"
+                if args.get("candidates_truncated"):
+                    prompt += (
+                        f"\nShowing the first {len(args.get('candidates', []))} of "
+                        f"{args.get('candidate_count', len(args.get('candidates', [])))} CSV files. "
+                        "Type the exact filename to use a file not shown."
+                    )
             else:
                 prompt = "I couldn't find that CSV inside the workspace. Upload it or check the filename."
             return {"kind": "help", "message": prompt}
