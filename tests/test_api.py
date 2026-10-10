@@ -287,3 +287,27 @@ def test_ambiguous_csv_prompt_is_bounded_for_large_workspaces(
     assert "first 50 of 75 CSV files" in prompt
     assert prompt.count("• report-") == 50
     assert "Type the exact filename" in prompt
+
+
+def test_csv_selection_prefers_explicit_relative_path_when_basenames_collide(
+    tmp_path: Path, monkeypatch
+):
+    root = tmp_path / "workspace"
+    (root / "region-a").mkdir(parents=True)
+    (root / "region-b").mkdir(parents=True)
+    (root / "region-a" / "sales.csv").write_text(
+        "name,value\nAlice,1\n", encoding="utf-8"
+    )
+    (root / "region-b" / "sales.csv").write_text(
+        "name,value\nBob,2\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("SOME_WORKSPACE", str(root))
+    monkeypatch.setenv("SOME_RECEIPTS_DB", str(tmp_path / "receipts.sqlite3"))
+    monkeypatch.delenv("SOME_OLLAMA_MODEL", raising=False)
+    client = TestClient(app)
+
+    response = client.post("/api/chat", json={"message": "inspect region-b/sales.csv"})
+    assert response.status_code == 200
+    assert response.json()["kind"] == "result"
+    assert response.json()["result"]["file"] == "region-b/sales.csv"
+    assert response.json()["result"]["row_count"] == 1
