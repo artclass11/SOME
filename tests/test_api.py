@@ -241,7 +241,7 @@ def test_non_csv_rule_action_skips_unneeded_inventory_walk(
     root.mkdir()
     monkeypatch.setenv("SOME_WORKSPACE", str(root))
     monkeypatch.setenv("SOME_RECEIPTS_DB", str(tmp_path / "receipts.sqlite3"))
-    monkeypatch.delenv("SOME_OLLAMA_MODEL", raising=False)
+    monkeypatch.setenv("SOME_OLLAMA_MODEL", "   ")
 
     def fail_if_called(_root):
         raise AssertionError("CSV inventory should not run for an explicit note command")
@@ -264,3 +264,26 @@ def test_frontend_preserves_upload_receipts_and_prevents_duplicate_plan_actions(
     assert "error.status = response.status" in script.text
     assert "Operation details · review required" in script.text
     assert "Proposed changes · nothing moved yet" in script.text
+
+
+def test_ambiguous_csv_prompt_is_bounded_for_large_workspaces(
+    tmp_path: Path, monkeypatch
+):
+    root = tmp_path / "workspace"
+    root.mkdir()
+    for index in range(75):
+        (root / f"report-{index:03}.csv").write_text(
+            "name,value\nAlice,1\n", encoding="utf-8"
+        )
+    monkeypatch.setenv("SOME_WORKSPACE", str(root))
+    monkeypatch.setenv("SOME_RECEIPTS_DB", str(tmp_path / "receipts.sqlite3"))
+    monkeypatch.delenv("SOME_OLLAMA_MODEL", raising=False)
+    client = TestClient(app)
+
+    response = client.post("/api/chat", json={"message": "inspect CSV"})
+    assert response.status_code == 200
+    assert response.json()["kind"] == "help"
+    prompt = response.json()["message"]
+    assert "first 50 of 75 CSV files" in prompt
+    assert prompt.count("• report-") == 50
+    assert "Type the exact filename" in prompt
