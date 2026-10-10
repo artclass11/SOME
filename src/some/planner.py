@@ -39,10 +39,17 @@ def _note_content(message: str) -> str | None:
 
 def _choose_csv(message: str, csv_files: list[str]) -> dict[str, Any]:
     """Choose only from existing CSV files returned by the filesystem scan."""
+    lower_message = message.casefold()
+    # Prefer an explicitly typed relative path before matching basenames. Otherwise
+    # two folders containing "sales.csv" make even "region-b/sales.csv" ambiguous.
+    path_mentions = [path for path in csv_files if path.casefold() in lower_message]
+    if len(path_mentions) == 1:
+        return {"file": path_mentions[0]}
+
     mentioned = [
         path for path in csv_files
-        if PurePosixPath(path).name.casefold() in message.casefold()
-        or path.casefold() in message.casefold()
+        if PurePosixPath(path).name.casefold() in lower_message
+        or path.casefold() in lower_message
     ]
     if len(mentioned) == 1:
         return {"file": mentioned[0]}
